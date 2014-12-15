@@ -3,7 +3,7 @@
 #
 #    OpenERP, Open Source Management Solution
 #    Copyright (C) 2004-2009 Tiny SPRL (<http://tiny.be>).
-#    Copyright (C) 2010-2013 OpenERP s.a. (<http://openerp.com>).
+#    Copyright (C) 2010-2014 OpenERP s.a. (<http://openerp.com>).
 #
 #    This program is free software: you can redistribute it and/or modify
 #    it under the terms of the GNU Affero General Public License as
@@ -42,6 +42,7 @@ from openerp import SUPERUSER_ID
 from openerp.tools.translate import _
 from openerp.modules.module import initialize_sys_path, \
     load_openerp_module, init_module_models, adapt_version
+from module import runs_post_install
 
 _logger = logging.getLogger(__name__)
 _test_logger = logging.getLogger('openerp.tests')
@@ -152,7 +153,6 @@ def load_module_graph(cr, graph, status=None, perform_checks=True, skip_modules=
         loaded_modules.append(package.name)
         if hasattr(package, 'init') or hasattr(package, 'update') or package.state in ('to install', 'to upgrade'):
             init_module_models(cr, package.name, models)
-        registry._init_modules.add(package.name)
         status['progress'] = float(index) / len(graph)
 
         # Can't put this line out of the loop: ir.module.module will be
@@ -181,12 +181,20 @@ def load_module_graph(cr, graph, status=None, perform_checks=True, skip_modules=
 
             migrations.migrate_module(package, 'post')
 
+            registry._init_modules.add(package.name)
+            # validate all the views at a whole
+            registry['ir.ui.view']._validate_module_views(cr, SUPERUSER_ID, module_name)
+
             if has_demo:
                 # launch tests only in demo mode, allowing tests to use demo data.
                 if tools.config.options['test_enable']:
                     # Yamel test
                     report.record_result(load_test(module_name, idref, mode))
                     # Python tests
+                    ir_http = registry['ir.http']
+                    if hasattr(ir_http, '_routing_map'):
+                        # Force routing map to be rebuilt between each module test suite
+                        del(ir_http._routing_map)
                     report.record_result(openerp.modules.module.run_unit_tests(module_name, cr.dbname))
 
             processed_modules.append(package.name)
@@ -202,6 +210,7 @@ def load_module_graph(cr, graph, status=None, perform_checks=True, skip_modules=
                 if hasattr(package, kind):
                     delattr(package, kind)
 
+        registry._init_modules.add(package.name)
         cr.commit()
 
     # The query won't be valid for models created later (i.e. custom model
@@ -421,8 +430,13 @@ def load_modules(db, force_demo=False, status=None, update_module=False):
         for model in registry.models.values():
             model._register_hook(cr)
 
+        # STEP 9: Run the post-install tests
+        cr.commit()
+        if openerp.tools.config['test_enable']:
+            cr.execute("SELECT name FROM ir_module_module WHERE state='installed'")
+            for module_name in cr.fetchall():
+                report.record_result(openerp.modules.module.run_unit_tests(module_name[0], cr.dbname, position=runs_post_install))
     finally:
         cr.close()
-
 
 # vim:expandtab:smartindent:tabstop=4:softtabstop=4:shiftwidth=4:

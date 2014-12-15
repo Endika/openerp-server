@@ -104,7 +104,9 @@ class ir_actions_report_xml(osv.osv):
             cr.execute("SELECT * FROM ir_act_report_xml WHERE report_name=%s", (name,))
             r = cr.dictfetchone()
             if r:
-                if r['report_rml'] or r['report_rml_content_data']:
+                if r['report_type'] in ['qweb-pdf', 'qweb-html']:
+                    return r['report_name']
+                elif r['report_rml'] or r['report_rml_content_data']:
                     if r['parser']:
                         kwargs = { 'parser': operator.attrgetter(r['parser'])(openerp.addons) }
                     else:
@@ -127,7 +129,11 @@ class ir_actions_report_xml(osv.osv):
         Look up a report definition and render the report for the provided IDs.
         """
         new_report = self._lookup_report(cr, name)
-        return new_report.create(cr, uid, res_ids, data, context)
+        # in order to use current yml test files with qweb reports
+        if isinstance(new_report, (str, unicode)):
+            return self.pool['report'].get_pdf(cr, uid, res_ids, new_report, data=data, context=context), 'pdf'
+        else:
+            return new_report.create(cr, uid, res_ids, data, context)
 
     _name = 'ir.actions.report.xml'
     _inherit = 'ir.actions.actions'
@@ -141,12 +147,12 @@ class ir_actions_report_xml(osv.osv):
         'model': fields.char('Model', required=True),
         'report_type': fields.selection([('qweb-pdf', 'PDF'),
                     ('qweb-html', 'HTML'),
-                    ('other', 'Other'),
+                    ('controller', 'Controller'),
                     ('pdf', 'RML pdf (deprecated)'),
                     ('sxw', 'RML sxw (deprecated)'),
                     ('webkit', 'Webkit (deprecated)'),
-                    ], 'Report Type', required=True, help="PDF will use wkhtmltopdf to render html to pdf, HTML will directly show html, Other will force download the controller output keeping the MIME type."),
-        'report_name': fields.char('Controller Name', required=True, help="URL of the report will be /report/<controller name>/<ids>, the default controller also use this field to get the name of the qweb ir.ui.view to render. For RML reports, this is the LocalService name."),
+                    ], 'Report Type', required=True, help="HTML will open the report directly in your browser, PDF will use wkhtmltopdf to render the HTML into a PDF file and let you download it, Controller allows you to define the url of a custom controller outputting any kind of report."),
+        'report_name': fields.char('Template Name', required=True, help="For QWeb reports, name of the template used in the rendering. The method 'render_html' of the model 'report.template_name' will be called (if any) to give the html. For RML reports, this is the LocalService name."),
         'groups_id': fields.many2many('res.groups', 'res_groups_report_rel', 'uid', 'gid', 'Groups'),
 
         # options
@@ -163,7 +169,7 @@ class ir_actions_report_xml(osv.osv):
         'report_xsl': fields.char('XSL Path'),
         'report_xml': fields.char('XML Path'),
 
-        'report_rml': fields.char('Main Report File Path', help="The path to the main report file (depending on Report Type) or NULL if the content is in another data field"),
+        'report_rml': fields.char('Main Report File Path/controller', help="The path to the main report file/controller (depending on Report Type) or NULL if the content is in another data field"),
         'report_file': fields.related('report_rml', type="char", required=False, readonly=False, string='Report File', help="The path to the main report file (depending on Report Type) or NULL if the content is in another field", store=True),
 
         'report_sxw': fields.function(_report_sxw, type='char', string='SXW Path'),
@@ -944,7 +950,8 @@ class ir_actions_server(osv.osv):
             'uid': uid,
             'user': user,
             'context': context,
-            'workflow': workflow
+            'workflow': workflow,
+            'Warning': openerp.exceptions.Warning,
         }
 
     def run(self, cr, uid, ids, context=None):
@@ -1049,6 +1056,18 @@ Launch Manually Once: after having been launched manually, it sets automatically
         'type': 'manual',
     }
     _order="sequence,id"
+
+    def name_get(self, cr, uid, ids, context=None):
+        return [(rec.id, rec.action_id.name) for rec in self.browse(cr, uid, ids, context=context)]
+
+    def name_search(self, cr, user, name, args=None, operator='ilike', context=None, limit=100):
+        if args is None:
+            args = []
+        if name:
+            ids = self.search(cr, user, [('action_id', operator, name)] + args, limit=limit)
+            return self.name_get(cr, user, ids, context=context)
+        return super(ir_actions_todo, self).name_search(cr, user, name, args=args, operator=operator, context=context, limit=limit)
+
 
     def action_launch(self, cr, uid, ids, context=None):
         """ Launch Action of Wizard"""

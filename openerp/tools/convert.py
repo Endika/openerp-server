@@ -305,12 +305,17 @@ form: module.record_id""" % (xml_id,)
 
         if d_search:
             idref = _get_idref(self, cr, self.uid, d_model, context={}, idref={})
-            ids = self.pool[d_model].search(cr, self.uid, unsafe_eval(d_search, idref))
+            try:
+                ids = self.pool[d_model].search(cr, self.uid, unsafe_eval(d_search, idref))
+            except ValueError:
+                _logger.warning('Skipping deletion for failed search `%r`', d_search, exc_info=True)
+                pass
         if d_id:
             try:
                 ids.append(self.id_get(cr, d_id))
-            except:
+            except ValueError:
                 # d_id cannot be found. doesn't matter in this case
+                _logger.warning('Skipping deletion for missing XML ID `%r`', d_id, exc_info=True)
                 pass
         if ids:
             self.pool[d_model].unlink(cr, self.uid, ids)
@@ -808,8 +813,8 @@ form: module.record_id""" % (xml_id,)
             f_ref = field.get("ref",'').encode('utf-8')
             f_search = field.get("search",'').encode('utf-8')
             f_model = field.get("model",'').encode('utf-8')
-            if not f_model and model._columns.get(f_name,False):
-                f_model = model._columns[f_name]._obj
+            if not f_model and model._all_columns.get(f_name,False):
+                f_model = model._all_columns[f_name].column._obj
             f_use = field.get("use",'').encode('utf-8') or 'id'
             f_val = False
 
@@ -821,9 +826,9 @@ form: module.record_id""" % (xml_id,)
                 # browse the objects searched
                 s = f_obj.browse(cr, self.uid, f_obj.search(cr, self.uid, q))
                 # column definitions of the "local" object
-                _cols = self.pool[rec_model]._columns
+                _cols = self.pool[rec_model]._all_columns
                 # if the current field is many2many
-                if (f_name in _cols) and _cols[f_name]._type=='many2many':
+                if (f_name in _cols) and _cols[f_name].column._type=='many2many':
                     f_val = [(6, 0, map(lambda x: x[f_use], s))]
                 elif len(s):
                     # otherwise (we are probably in a many2one field),
@@ -833,17 +838,17 @@ form: module.record_id""" % (xml_id,)
                 if f_ref=="null":
                     f_val = False
                 else:
-                    if f_name in model._columns \
-                              and model._columns[f_name]._type == 'reference':
+                    if f_name in model._all_columns \
+                              and model._all_columns[f_name].column._type == 'reference':
                         val = self.model_id_get(cr, f_ref)
                         f_val = val[0] + ',' + str(val[1])
                     else:
                         f_val = self.id_get(cr, f_ref)
             else:
                 f_val = _eval_xml(self,field, self.pool, cr, self.uid, self.idref)
-                if model._columns.has_key(f_name):
+                if f_name in model._all_columns:
                     import openerp.osv as osv
-                    if isinstance(model._columns[f_name], osv.fields.integer):
+                    if isinstance(model._all_columns[f_name].column, osv.fields.integer):
                         f_val = int(f_val)
             res[f_name] = f_val
 
@@ -857,12 +862,12 @@ form: module.record_id""" % (xml_id,)
     def _tag_template(self, cr, el, data_node=None):
         # This helper transforms a <template> element into a <record> and forwards it
         tpl_id = el.get('id', el.get('t-name', '')).encode('ascii')
-        module = self.module
-        if '.' in tpl_id:
-            module, tpl_id = tpl_id.split('.', 1)
+        full_tpl_id = tpl_id
+        if '.' not in full_tpl_id:
+            full_tpl_id = '%s.%s' % (self.module, tpl_id)
         # set the full template name for qweb <module>.<id>
         if not (el.get('inherit_id') or el.get('inherit_option_id')):
-            el.set('t-name', '%s.%s' % (module, tpl_id))
+            el.set('t-name', full_tpl_id)
             el.tag = 't'
         else:
             el.tag = 'data'
@@ -952,8 +957,9 @@ form: module.record_id""" % (xml_id,)
             'url': self._tag_url
         }
 
-def convert_file(cr, module, filename, idref, mode='update', noupdate=False, kind=None, report=None):
-    pathname = os.path.join(module, filename)
+def convert_file(cr, module, filename, idref, mode='update', noupdate=False, kind=None, report=None, pathname=None):
+    if pathname is None:
+        pathname = os.path.join(module, filename)
     fp = misc.file_open(pathname)
     ext = os.path.splitext(filename)[1].lower()
     try:
